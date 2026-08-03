@@ -1,4 +1,4 @@
-# Solana MemeCoin Trader v4.0 — Railway
+# Solana MemeCoin Trader v3.9 — Railway
 
 Bản deploy Railway của dashboard PAPER + Phantom REAL.
 
@@ -47,7 +47,7 @@ Trên Railway Volume `/data`, file có dạng:
 Redeploy source không xóa danh sách này nếu Volume `/data` vẫn được gắn.
 
 
-## v4.0 — sửa `custom program error: 0x1` trong self-pay
+## v3.9 — sửa `custom program error: 0x1` trong self-pay
 
 Bản trước chỉ tính:
 
@@ -58,7 +58,7 @@ Bản trước chỉ tính:
 Nhưng khi `wrapAndUnwrapSol=true`, Jupiter còn tạo một tài khoản Wrapped SOL tạm thời.
 Rent của tài khoản này được hoàn lại cuối transaction, nhưng ví vẫn phải đủ SOL ứng trước.
 
-v4.0:
+v3.9:
 
 - Tính thêm WSOL rent vào số SOL cần có trước giao dịch.
 - Không coi `-32002 Transaction simulation failed` là lỗi kết nối RPC.
@@ -80,26 +80,3 @@ Tổng ứng trước         ~0.005333 SOL
 ```
 
 Nên để khoảng 0.006–0.008 SOL để thử giao dịch nhỏ, thay vì chỉ 0.002 SOL.
-
-## v4.0 — Market WebSocket
-
-- Birdeye `SUBSCRIBE_TOKEN_STATS` streams price/FDV/marketcap/liquidity.
-- REAL positions are subscribed before scanner tokens.
-- WebSocket changes are sent to the browser in ~150 ms batches.
-- Out-of-order WebSocket events are rejected.
-- REST snapshots cannot overwrite a fresh Birdeye value for 15 seconds.
-- DEX REST remains a fallback.
-
-Railway Variables:
-
-```env
-BIRDEYE_API_KEY=YOUR_KEY
-BIRDEYE_WS_ENABLED=true
-BIRDEYE_WS_MAX_TOKENS=100
-BIRDEYE_MC_MODE=fdv
-BIRDEYE_FRESH_LOCK_MS=15000
-REALTIME_BROADCAST_MS=150
-```
-
-The position badge must show `⚡ Birdeye WS`. `DEX REST` means the WebSocket
-is unavailable, the key is missing, or the Birdeye plan has no WebSocket access.

@@ -15,6 +15,15 @@ FAST_TICKER_MAX_TOKENS=90
 SCAN_INTERVAL_MS=10000
 MOCK_MODE=false
 
+REALTIME (khuyến nghị mạnh — để giá bám sát on-chain như GMGN, không delay
+theo chu kỳ polling):
+HELIUS_API_KEY=<lấy trong dashboard Helius, có thể dùng chung key với SOLANA_RPC_URL>
+REALTIME_ENABLED=true
+# Các biến còn lại (HELIUS_WS_URL, REALTIME_MIN_REFETCH_MS, REALTIME_MAX_SUBS,
+# REALTIME_FALLBACK_POLL_MS, REALTIME_RECONNECT_MS) có default hợp lý, chỉ
+# cần set nếu muốn tinh chỉnh. Không set HELIUS_API_KEY thì app tự rơi về
+# polling như bản cũ, không lỗi.
+
 KHÔNG TẠO:
 PORT
 RAILWAY_VOLUME_MOUNT_PATH
