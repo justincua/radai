@@ -1,8 +1,8 @@
 {
   "name": "solana-memecoin-trader-railway",
-  "version": "3.9.0",
+  "version": "4.0.0",
   "private": true,
-  "description": "Railway Solana meme trader with WSOL upfront rent accounting and deterministic self-pay simulation diagnostics",
+  "description": "Railway Solana meme trader with Birdeye token-stats WebSocket and stale REST overwrite protection",
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
@@ -10,6 +10,6 @@
     "railway": "node server.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   }
 }

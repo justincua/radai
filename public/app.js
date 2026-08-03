@@ -20,6 +20,7 @@ let instantProfiles = JSON.parse(JSON.stringify(DEFAULT_INSTANT_PROFILES));
 let instantBusy = false;
 let instantLastQuote = null;
 let fastTickerReceivedAt = 0;
+let realtimeMarketStatus = null;
 let historyRange = "all";
 let historyType = "all";
 let pnlCursor = new Date();
@@ -154,6 +155,63 @@ function modeLabel() {
   return tradeMode === "real" ? "REAL" : "PAPER";
 }
 
+function marketAgeMs(item) {
+  const timestamp = Number(item?.marketReceivedAt || item?.liveUpdatedAt || item?.marketSourceAt || 0);
+  return timestamp > 0 ? Math.max(0, Date.now() - timestamp) : Infinity;
+}
+function marketAgeLabel(item) {
+  const age = marketAgeMs(item);
+  if (!Number.isFinite(age)) return "chưa rõ";
+  if (age < 1000) return `${Math.max(0, Math.round(age))}ms`;
+  return `${(age / 1000).toFixed(age < 10000 ? 1 : 0)}s`;
+}
+function marketSourceLabel(item) {
+  return item?.marketSource === "Birdeye WS" ? "Birdeye WS" : item?.marketSource || "DEX REST";
+}
+function mergeMarketDeltas(tokens) {
+  if (!state) return;
+  const byMint = new Map((state.tokens || []).map(token => [token.tokenAddress, token]));
+  for (const incoming of tokens || []) {
+    const current = byMint.get(incoming.tokenAddress) || {};
+    const currentAt = Number(current.marketSourceAt || 0);
+    const incomingAt = Number(incoming.marketSourceAt || incoming.liveUpdatedAt || Date.now());
+    if (current.marketSource === "Birdeye WS"
+        && incoming.marketSource === "Birdeye WS"
+        && incomingAt < currentAt) continue;
+    byMint.set(incoming.tokenAddress, { ...current, ...incoming });
+  }
+  state.tokens = [...byMint.values()];
+}
+function syncPaperPositionsFromLiveState() {
+  if (!paper?.account?.positions || !state?.tokens) return;
+  paper.account.positions = paper.account.positions.map(position => {
+    const live = state.tokens.find(token => token.tokenAddress === position.tokenAddress);
+    if (!live) return position;
+    const priceUsd = Number(live.priceUsd || position.priceUsd || 0);
+    const currentMarketCap = Number(live.marketCap || position.currentMarketCap || 0);
+    const marketValueUsd = Number(position.quantity || 0) * priceUsd;
+    const unrealizedPnlUsd = marketValueUsd - Number(position.costBasisUsd || 0);
+    return {
+      ...position, priceUsd, currentMarketCap, marketValueUsd, unrealizedPnlUsd,
+      pnlPct: Number(position.costBasisUsd || 0) > 0 ? unrealizedPnlUsd / Number(position.costBasisUsd) * 100 : 0,
+      marketCapChangePct: Number(position.entryMarketCap || 0) > 0
+        ? (currentMarketCap - Number(position.entryMarketCap)) / Number(position.entryMarketCap) * 100 : 0,
+      marketSource: live.marketSource,
+      marketSourceAt: live.marketSourceAt,
+      marketReceivedAt: live.marketReceivedAt
+    };
+  });
+  const value = paper.account.positions.reduce((s,p) => s + Number(p.marketValueUsd || 0), 0);
+  const unrealized = paper.account.positions.reduce((s,p) => s + Number(p.unrealizedPnlUsd || 0), 0);
+  paper.summary.positionsValueUsd = value;
+  paper.summary.unrealizedPnlUsd = unrealized;
+  paper.summary.equityUsd = Number(paper.account.usdBalance || 0)
+    + Number(paper.account.solBalance || 0) * Number(paper.summary.solPriceUsd || 0) + value;
+  paper.summary.totalPnlUsd = paper.summary.equityUsd - Number(paper.summary.netDepositsUsd || 0);
+  paper.summary.totalPnlPct = Number(paper.summary.netDepositsUsd || 0) > 0
+    ? paper.summary.totalPnlUsd / Number(paper.summary.netDepositsUsd) * 100 : 0;
+}
+
 function tokenCard(token) {
   const img = token.imageUrl ? `<img class="token-logo" src="${escapeHtml(safeUrl(token.imageUrl))}" alt="" onerror="this.outerHTML='<div class=&quot;token-logo&quot;>${escapeHtml(token.symbol.slice(0,2))}</div>'">` : `<div class="token-logo">${escapeHtml(token.symbol.slice(0, 2))}</div>`;
   const risks = (token.riskFlags || []).slice(0, 3).map(x => `<span class="tag risk">${escapeHtml(x)}</span>`).join("");
@@ -261,7 +319,10 @@ function realPositionsWithLiveMarket() {
       marketValueUsd,
       unrealizedPnlUsd,
       pnlPct: position.costBasisUsd > 0 ? unrealizedPnlUsd / position.costBasisUsd * 100 : 0,
-      marketCapChangePct: position.entryMarketCap > 0 ? (currentMarketCap - position.entryMarketCap) / position.entryMarketCap * 100 : 0
+      marketCapChangePct: position.entryMarketCap > 0 ? (currentMarketCap - position.entryMarketCap) / position.entryMarketCap * 100 : 0,
+      marketSource: live?.marketSource || position.marketSource || "DEX REST",
+      marketSourceAt: Number(live?.marketSourceAt || position.marketSourceAt || 0),
+      marketReceivedAt: Number(live?.marketReceivedAt || live?.liveUpdatedAt || position.marketReceivedAt || 0)
     };
   });
 }
@@ -341,7 +402,10 @@ function renderRealAccount() {
   const lowBalanceText = realQuickBalance?.lowBalanceWarning
     ? ` · <span class="real-low-balance">SOL thấp</span>`
     : "";
-  $("paperStatus").innerHTML = `<span class="status-dot ok"></span> <span class="real-wallet-address">${escapeHtml(shortMint(walletState.address))}</span> · Phantom REAL · SOL 1s · Giá/MC 1s${lowBalanceText}`;
+  const feed = realtimeMarketStatus?.connected
+    ? `⚡ Birdeye WS · ${realtimeMarketStatus.subscribedTokens || 0} token`
+    : "DEX REST fallback";
+  $("paperStatus").innerHTML = `<span class="status-dot ok"></span> <span class="real-wallet-address">${escapeHtml(shortMint(walletState.address))}</span> · Phantom REAL · SOL 1s · ${feed}${lowBalanceText}`;
   $("paperEquity").textContent = fmtMoney(equity, false, 2);
   $("paperTotalPnl").innerHTML = `<span class="${pnlClass(totalPnl)}">${totalPnl >= 0 ? "+" : ""}${fmtMoney(totalPnl, false, 2)} · PnL theo lệnh đã thực hiện bằng app</span>`;
   $("paperUsd").textContent = fmtMoney(a.usdBalance, false, 2);
@@ -365,6 +429,9 @@ function positionCard(p) {
       <div class="position-symbol-row"><strong><span class="live-dot"></span>${escapeHtml(p.symbol)}</strong><span class="tag">${escapeHtml(shortMint(p.tokenAddress))}</span></div>
       <small>${fmtToken(p.quantity)} token · ${untracked ? `<span class="real-untracked">Không có giá vốn trong app</span>` : `Giá vốn ${fmtMoney(p.avgEntryUsd, false)}`}</small>
       <span class="position-contract">${escapeHtml(p.tokenAddress)}</span>
+      <span class="position-market-feed ${p.marketSource === "Birdeye WS" ? "ws-live" : "rest-feed"}">
+        ${p.marketSource === "Birdeye WS" ? "⚡" : "◷"} ${escapeHtml(marketSourceLabel(p))} · ${escapeHtml(marketAgeLabel(p))}
+      </span>
     </div>
     <div class="position-value"><strong>${fmtMoney(p.marketValueUsd, false, 2)}</strong><small class="${pnlClass(p.unrealizedPnlUsd)}">${untracked ? "PnL —" : `${p.unrealizedPnlUsd >= 0 ? "+" : ""}${fmtMoney(p.unrealizedPnlUsd, false, 2)} · ${p.pnlPct >= 0 ? "+" : ""}${fmtNum(p.pnlPct)}%`}</small></div>
     <div class="position-mc-grid">
@@ -1303,7 +1370,12 @@ async function init() {
     if (!eagerConnected) updatePhantomConnectPanel();
   }
   pnlCursor = new Date();
-  try { const r = await fetch("/api/state"); state = await r.json(); renderScanner(); } catch (e) { toast(`Không kết nối server: ${e.message}`); }
+  try {
+    const r = await fetch("/api/state");
+    state = await r.json();
+    realtimeMarketStatus = state?.config?.realtime || null;
+    renderScanner();
+  } catch (e) { toast(`Không kết nối server: ${e.message}`); }
   const stream = new EventSource("/api/stream");
   stream.addEventListener("scan", event => { state = JSON.parse(event.data); renderScanner(); });
   stream.addEventListener("ticker", event => {
@@ -1315,8 +1387,38 @@ async function init() {
       paper = update.paper;
       if (priorTrades.length > (paper.account?.trades?.length || 0)) paper.account.trades = priorTrades;
     }
-    const pill = $("fastTickerPill"); if (pill) { pill.className = "pill fast ok"; pill.innerHTML = `<span></span>Giá/MC ${Math.max(0, Math.round((Date.now()-fastTickerReceivedAt)/1000))}s`; }
+    syncPaperPositionsFromLiveState();
+    const pill = $("fastTickerPill");
+    if (pill && !realtimeMarketStatus?.connected) {
+      pill.className = "pill fast ok";
+      pill.innerHTML = `<span></span>REST ${Math.max(0, Math.round((Date.now()-fastTickerReceivedAt)/1000))}s`;
+    }
     renderPaper();
+  });
+  stream.addEventListener("market_delta", event => {
+    const update = JSON.parse(event.data);
+    realtimeMarketStatus = update.realtime || realtimeMarketStatus;
+    fastTickerReceivedAt = update.updatedAt || Date.now();
+    mergeMarketDeltas(update.tokens || []);
+    syncPaperPositionsFromLiveState();
+    const pill = $("fastTickerPill");
+    if (pill) {
+      pill.className = "pill fast ok ws-streaming";
+      pill.innerHTML = `<span></span>⚡ WS ${Math.max(0, Date.now() - fastTickerReceivedAt)}ms`;
+    }
+    renderPaper();
+  });
+  stream.addEventListener("realtime_status", event => {
+    realtimeMarketStatus = JSON.parse(event.data);
+    const pill = $("fastTickerPill");
+    if (!pill) return;
+    if (realtimeMarketStatus.connected) {
+      pill.className = "pill fast ok ws-streaming";
+      pill.innerHTML = `<span></span>⚡ WS · ${realtimeMarketStatus.subscribedTokens || 0}`;
+    } else {
+      pill.className = "pill pending";
+      pill.innerHTML = `<span></span>REST fallback`;
+    }
   });
   stream.addEventListener("ticker_error", event => { const data=JSON.parse(event.data); const pill=$("fastTickerPill"); if(pill){pill.className="pill error";pill.innerHTML=`<span></span>Giá nhanh lỗi`; } });
   stream.onerror = () => { const pill = $("connectionPill"); pill.className = "pill error"; pill.innerHTML = "<span></span>Mất kết nối"; };

@@ -610,3 +610,9 @@ body.real-mode #paperFillMode { display: none; }
   overflow-y: auto;
   white-space: normal;
 }
+
+.position-market-feed{display:inline-flex;align-items:center;width:max-content;margin-top:6px;padding:3px 7px;border:1px solid #292929;border-radius:999px;color:#777;font-size:8px;font-weight:750}
+.position-market-feed.ws-live{border-color:rgba(40,225,145,.28);background:rgba(40,225,145,.07);color:#52df9c}
+.position-market-feed.rest-feed{color:#a38657}
+.ws-streaming{border-color:rgba(40,225,145,.36)!important;color:#52df9c!important}
+.ws-streaming span{box-shadow:0 0 10px rgba(40,225,145,.8)}

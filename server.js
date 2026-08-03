@@ -26,6 +26,17 @@ const CONFIG = {
   fastTickerEnabled: boolEnv("FAST_TICKER_ENABLED", true),
   fastTickerMs: intEnv("FAST_TICKER_MS", 1_000, 750, 10_000),
   fastTickerMaxTokens: intEnv("FAST_TICKER_MAX_TOKENS", 90, 1, 120),
+  birdeyeApiKey: String(process.env.BIRDEYE_API_KEY || "").trim(),
+  birdeyeWsEnabled: boolEnv("BIRDEYE_WS_ENABLED", true),
+  birdeyeWsUrl: String(process.env.BIRDEYE_WS_URL || "wss://public-api.birdeye.so/socket/solana").trim(),
+  birdeyeWsMaxTokens: intEnv("BIRDEYE_WS_MAX_TOKENS", 100, 1, 100),
+  birdeyeWsResubscribeMs: intEnv("BIRDEYE_WS_RESUBSCRIBE_MS", 2_000, 500, 60_000),
+  birdeyeFreshLockMs: intEnv("BIRDEYE_FRESH_LOCK_MS", 15_000, 1_000, 120_000),
+  birdeyeReconnectMaxMs: intEnv("BIRDEYE_RECONNECT_MAX_MS", 30_000, 2_000, 300_000),
+  birdeyeMcMode: ["fdv", "marketcap"].includes(String(process.env.BIRDEYE_MC_MODE || "").toLowerCase())
+    ? String(process.env.BIRDEYE_MC_MODE).toLowerCase()
+    : "fdv",
+  realtimeBroadcastMs: intEnv("REALTIME_BROADCAST_MS", 150, 50, 1_000),
   timeoutMs: intEnv("REQUEST_TIMEOUT_MS", 9_000, 2_000, 60_000),
   geckoEnabled: boolEnv("GECKO_ENABLED", true),
   geckoPages: intEnv("GECKO_PAGES", 1, 1, 3),
@@ -44,7 +55,7 @@ const CONFIG = {
     "https://api.mainnet.solana.com"
   ].map(value => String(value || "").trim()).filter(Boolean).map(trimSlash))],
   jupiterApiKey: (process.env.JUPITER_API_KEY || "").trim(),
-  appVersion: "3.9.0-railway",
+  appVersion: "4.0.0-railway",
   realSlippageMode: ["rtse", "fixed"].includes(String(process.env.REAL_SLIPPAGE_MODE || "").toLowerCase())
     ? String(process.env.REAL_SLIPPAGE_MODE).toLowerCase()
     : "rtse",
@@ -280,6 +291,24 @@ let fastTickerTimer = null;
 let fastTickerRunning = false;
 let fastTickerUpdatedAt = 0;
 let fastTickerError = null;
+const realTrackedMints = new Set();
+const realtimeTokenMeta = new Map();
+const pendingMarketDeltas = new Map();
+let realtimeDeltaTimer = null;
+let birdeyeSocket = null;
+let birdeyeReconnectTimer = null;
+let birdeyeResubscribeTimer = null;
+let birdeyeReconnectAttempt = 0;
+let birdeyeSubscriptionKey = "";
+let birdeyeStatus = {
+  configured: Boolean(CONFIG.birdeyeApiKey && CONFIG.birdeyeWsEnabled),
+  connected: false,
+  status: CONFIG.birdeyeApiKey ? "disconnected" : "missing_key",
+  subscribedTokens: 0,
+  lastMessageAt: 0,
+  lastError: null,
+  reconnects: 0
+};
 const tokenDecimalsCache = new Map([[SOL_MINT, 9], [USDC_MINT, 6]]);
 let solPriceCache = { value: 0, fetchedAt: 0 };
 let paperLock = Promise.resolve();
@@ -653,6 +682,9 @@ function parseGeckoPool(item, included, now = Date.now()) {
     id: base.address || pairAddress,
     chainId: "solana",
     source: "GeckoTerminal",
+    marketSource: "Gecko REST",
+    marketSourceAt: now,
+    marketReceivedAt: now,
     pairAddress,
     tokenAddress: base.address,
     name: base.name || a.name?.split(" / ")[0] || "Token mới",
@@ -691,6 +723,7 @@ function parseGeckoPool(item, included, now = Date.now()) {
 }
 
 function parseDexPair(pair, profile = {}) {
+  const receivedAt = Date.now();
   const base = pair.baseToken || {};
   const tx = pair.txns || {};
   const vol = pair.volume || {};
@@ -705,6 +738,9 @@ function parseDexPair(pair, profile = {}) {
     id: base.address || pair.pairAddress,
     chainId: pair.chainId || "solana",
     source: "DEX Screener",
+    marketSource: "DEX REST",
+    marketSourceAt: receivedAt,
+    marketReceivedAt: receivedAt,
     pairAddress: pair.pairAddress,
     tokenAddress: base.address,
     name: base.name || profile.description || "Token mới",
@@ -1222,6 +1258,7 @@ async function performScan(manual = false) {
     };
   }
 
+  scheduleBirdeyeResubscribe();
   broadcast();
   scheduleNext();
   return state;
@@ -1239,28 +1276,270 @@ function chooseBestPairForToken(pairs, address) {
     .sort((a, b) => n(b?.liquidity?.usd) - n(a?.liquidity?.usd))[0] || null;
 }
 
+const MARKET_VALUE_FIELDS = [
+  "priceUsd", "marketCap", "fdv", "liquidityUsd",
+  "priceChange5m", "priceChange1h", "priceChange24h",
+  "volume5m", "volume1h", "volume24h",
+  "buys5m", "sells5m", "buys1h", "sells1h",
+  "txns5m", "txns1h", "marketSource", "marketSourceAt",
+  "marketReceivedAt", "lastTradeAt", "liveUpdatedAt"
+];
+
+function hasFreshBirdeyeLock(token, now = Date.now()) {
+  return token?.marketSource === "Birdeye WS"
+    && now - n(token?.marketReceivedAt) <= CONFIG.birdeyeFreshLockMs;
+}
+
 function mergeFastToken(oldToken, freshToken) {
-  return normalizeToken({
+  const now = Date.now();
+  const incomingSource = String(freshToken?.marketSource || freshToken?.source || "");
+  const incomingSourceAt = n(freshToken?.marketSourceAt, n(freshToken?.liveUpdatedAt, now));
+  const currentSourceAt = n(oldToken?.marketSourceAt);
+  const incomingIsBirdeye = incomingSource === "Birdeye WS";
+  const currentIsBirdeye = oldToken?.marketSource === "Birdeye WS";
+
+  if (incomingIsBirdeye && currentIsBirdeye && incomingSourceAt < currentSourceAt) {
+    return oldToken;
+  }
+
+  const mergedInput = {
     ...oldToken,
     ...freshToken,
     audit: oldToken?.audit || freshToken?.audit || null,
     socials: freshToken?.socials || oldToken?.socials || {},
     boosts: Math.max(n(oldToken?.boosts), n(freshToken?.boosts)),
     profileUrl: freshToken?.profileUrl || oldToken?.profileUrl || null,
-    liveUpdatedAt: Date.now()
-  });
+    liveUpdatedAt: now
+  };
+
+  if (!incomingIsBirdeye && hasFreshBirdeyeLock(oldToken, now)) {
+    for (const field of MARKET_VALUE_FIELDS) mergedInput[field] = oldToken[field];
+  }
+
+  return normalizeToken(mergedInput);
 }
 
-function fastTrackedAddresses() {
+function trackedTokenMetadata(address) {
+  const existing = state.tokens.find(token => token.tokenAddress === address);
+  if (existing) return existing;
+  return realtimeTokenMeta.get(address) || {
+    tokenAddress: address,
+    id: address,
+    symbol: `${address.slice(0, 4)}…${address.slice(-4)}`,
+    name: "Token SPL",
+    quoteSymbol: "SOL",
+    dexId: "Solana",
+    source: "Wallet",
+    createdAt: Date.now(),
+    ageMinutes: 0,
+    score: 0,
+    grade: "—",
+    signal: "Theo dõi vị thế",
+    riskFlags: []
+  };
+}
+
+function applyBirdeyeTokenStats(data) {
+  const address = String(data?.address || "").trim();
+  const priceUsd = n(data?.price);
+  if (!address || !(priceUsd > 0)) return null;
+
+  const sourceAt = Math.max(
+    n(data?.last_trade_unix_time) * 1_000,
+    Date.parse(data?.last_trade_human_time || "") || 0,
+    Date.now() - 1
+  );
+  const marketCap = CONFIG.birdeyeMcMode === "marketcap"
+    ? n(data?.marketcap, n(data?.fdv))
+    : n(data?.fdv, n(data?.marketcap));
+
+  const fresh = {
+    ...trackedTokenMetadata(address),
+    tokenAddress: address,
+    id: address,
+    source: "Birdeye",
+    marketSource: "Birdeye WS",
+    marketSourceAt: sourceAt,
+    marketReceivedAt: Date.now(),
+    lastTradeAt: sourceAt,
+    priceUsd,
+    marketCap,
+    fdv: n(data?.fdv, marketCap),
+    liquidityUsd: n(data?.liquidity),
+    volume1h: n(data?.volume_1h_usd),
+    volume24h: n(data?.volume_24h_usd),
+    priceChange1h: n(data?.price_change_1h_percent),
+    priceChange24h: n(data?.price_change_24h_percent),
+    buys1h: n(data?.buy_1h),
+    sells1h: n(data?.sell_1h),
+    txns1h: n(data?.trade_1h),
+    liveUpdatedAt: Date.now()
+  };
+
+  const index = state.tokens.findIndex(token => token.tokenAddress === address);
+  const merged = mergeFastToken(index >= 0 ? state.tokens[index] : trackedTokenMetadata(address), fresh);
+  if (index >= 0) state.tokens[index] = merged;
+  else state.tokens.unshift(merged);
+
+  pendingMarketDeltas.set(address, merged);
+  queueMarketDeltaBroadcast();
+  return merged;
+}
+
+function queueMarketDeltaBroadcast() {
+  if (realtimeDeltaTimer) return;
+  realtimeDeltaTimer = setTimeout(() => {
+    realtimeDeltaTimer = null;
+    if (!pendingMarketDeltas.size) return;
+    const tokens = [...pendingMarketDeltas.values()];
+    pendingMarketDeltas.clear();
+    broadcastEvent("market_delta", {
+      updatedAt: Date.now(),
+      source: "Birdeye WS",
+      tokens,
+      realtime: publicRealtimeStatus()
+    });
+  }, CONFIG.realtimeBroadcastMs);
+  realtimeDeltaTimer.unref?.();
+}
+
+function fastTrackedAddresses(limit = CONFIG.fastTickerMaxTokens) {
   const account = loadPaperAccount();
-  const positions = Object.keys(account.positions || {});
+  const paperPositions = Object.keys(account.positions || {});
+  const realPositions = [...realTrackedMints];
   const watch = getWatchlist().map(item => item.tokenAddress).filter(Boolean);
   const ranked = [...(state.tokens || [])]
     .sort((a, b) => n(b.score) - n(a.score) || n(b.volume5m) - n(a.volume5m))
     .map(token => token.tokenAddress)
     .filter(Boolean);
-  return [...new Set([...positions, ...watch, ...ranked])].slice(0, CONFIG.fastTickerMaxTokens);
+
+  return [...new Set([...realPositions, ...paperPositions, ...watch, ...ranked])]
+    .slice(0, limit);
 }
+
+function publicRealtimeStatus() {
+  return {
+    configured: birdeyeStatus.configured,
+    connected: birdeyeStatus.connected,
+    status: birdeyeStatus.status,
+    subscribedTokens: birdeyeStatus.subscribedTokens,
+    lastMessageAt: birdeyeStatus.lastMessageAt,
+    lastError: birdeyeStatus.lastError,
+    source: birdeyeStatus.connected ? "Birdeye WebSocket" : "DEX REST fallback",
+    mcMode: CONFIG.birdeyeMcMode
+  };
+}
+
+function birdeyeSubscribeNow(force = false) {
+  if (!birdeyeSocket || birdeyeSocket.readyState !== WebSocket.OPEN) return;
+  const addresses = fastTrackedAddresses(CONFIG.birdeyeWsMaxTokens);
+  const key = addresses.join(",");
+  if (!force && key === birdeyeSubscriptionKey) return;
+  birdeyeSubscriptionKey = key;
+  birdeyeStatus.subscribedTokens = addresses.length;
+  if (!addresses.length) return;
+
+  birdeyeSocket.send(JSON.stringify({
+    type: "SUBSCRIBE_TOKEN_STATS",
+    data: {
+      address: addresses,
+      select: {
+        price: true,
+        fdv: true,
+        marketcap: true,
+        supply: true,
+        last_trade: true,
+        liquidity: true
+      }
+    }
+  }));
+}
+
+function scheduleBirdeyeResubscribe() {
+  if (!birdeyeStatus.configured) return;
+  clearTimeout(birdeyeResubscribeTimer);
+  birdeyeResubscribeTimer = setTimeout(
+    () => birdeyeSubscribeNow(false),
+    CONFIG.birdeyeWsResubscribeMs
+  );
+  birdeyeResubscribeTimer.unref?.();
+}
+
+function scheduleBirdeyeReconnect() {
+  if (!birdeyeStatus.configured || shuttingDown) return;
+  clearTimeout(birdeyeReconnectTimer);
+  birdeyeReconnectAttempt += 1;
+  const wait = Math.min(
+    CONFIG.birdeyeReconnectMaxMs,
+    1_000 * (2 ** Math.min(birdeyeReconnectAttempt, 5))
+  );
+  birdeyeStatus.reconnects += 1;
+  birdeyeReconnectTimer = setTimeout(connectBirdeyeWebSocket, wait);
+  birdeyeReconnectTimer.unref?.();
+}
+
+function connectBirdeyeWebSocket() {
+  if (!birdeyeStatus.configured || shuttingDown) return;
+  if (birdeyeSocket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(birdeyeSocket.readyState)) return;
+
+  const separator = CONFIG.birdeyeWsUrl.includes("?") ? "&" : "?";
+  const url = `${CONFIG.birdeyeWsUrl}${separator}x-api-key=${encodeURIComponent(CONFIG.birdeyeApiKey)}`;
+  birdeyeStatus.status = "connecting";
+  birdeyeStatus.lastError = null;
+
+  // Node 22 provides a native WebSocket client. The requested subprotocol
+  // produces the Sec-WebSocket-Protocol header required by Birdeye.
+  const socket = new WebSocket(url, "echo-protocol");
+  birdeyeSocket = socket;
+
+  socket.addEventListener("open", () => {
+    if (birdeyeSocket !== socket) return;
+    birdeyeReconnectAttempt = 0;
+    birdeyeStatus.connected = true;
+    birdeyeStatus.status = "connected";
+    birdeyeStatus.lastError = null;
+    birdeyeSubscriptionKey = "";
+    birdeyeSubscribeNow(true);
+    broadcastEvent("realtime_status", publicRealtimeStatus());
+  });
+
+  socket.addEventListener("message", event => {
+    let message;
+    try { message = JSON.parse(String(event.data || "")); }
+    catch { return; }
+
+    if (message?.type === "TOKEN_STATS_DATA" && message?.data) {
+      birdeyeStatus.lastMessageAt = Date.now();
+      birdeyeStatus.status = "streaming";
+      applyBirdeyeTokenStats(message.data);
+      return;
+    }
+    if (message?.type === "ERROR" || message?.error) {
+      birdeyeStatus.lastError = String(message?.error || message?.message || "Birdeye WebSocket error").slice(0, 300);
+      broadcastEvent("realtime_status", publicRealtimeStatus());
+    }
+  });
+
+  socket.addEventListener("error", event => {
+    if (birdeyeSocket !== socket) return;
+    birdeyeStatus.lastError = String(event?.message || "WebSocket connection error").slice(0, 300);
+    birdeyeStatus.status = "error";
+    broadcastEvent("realtime_status", publicRealtimeStatus());
+  });
+
+  socket.addEventListener("close", event => {
+    if (birdeyeSocket !== socket) return;
+    birdeyeSocket = null;
+    birdeyeStatus.connected = false;
+    birdeyeStatus.status = "disconnected";
+    if (event.code !== 1000) {
+      birdeyeStatus.lastError = `WS ${event.code}${event.reason ? `: ${event.reason}` : ""}`;
+    }
+    broadcastEvent("realtime_status", publicRealtimeStatus());
+    scheduleBirdeyeReconnect();
+  });
+}
+
 
 async function fetchFastMarket(addresses) {
   const updates = new Map();
@@ -1307,6 +1586,7 @@ async function runFastTicker() {
     }
     fastTickerUpdatedAt = Date.now();
     fastTickerError = null;
+    scheduleBirdeyeResubscribe();
     const paper = await paperView({ includeTrades: false });
     broadcastEvent("ticker", {
       updatedAt: fastTickerUpdatedAt,
@@ -1340,6 +1620,7 @@ function publicState() {
       fastTickerMs: CONFIG.fastTickerMs,
       fastTickerUpdatedAt,
       fastTickerError,
+      realtime: publicRealtimeStatus(),
       rpcAudit: CONFIG.rpcAudit,
       mockMode: CONFIG.mockMode,
       geckoEnabled: CONFIG.geckoEnabled,
@@ -2490,6 +2771,8 @@ async function realPortfolio(wallet) {
 
   const ledger = loadRealLedger(wallet);
   const mints = [...balances.tokens.keys()].filter(mint => mint !== USDC_MINT && mint !== SOL_MINT);
+  for (const mint of mints) realTrackedMints.add(mint);
+  scheduleBirdeyeResubscribe();
   let marketUpdates = new Map();
   if (mints.length) {
     try { marketUpdates = await fetchFastMarket(mints.slice(0, 120)); }
@@ -2500,9 +2783,19 @@ async function realPortfolio(wallet) {
   for (const mint of mints) {
     const tokenBalance = balances.tokens.get(mint);
     const tracked = ledger.positions[mint] || {};
-    const live = marketUpdates.get(mint)
-      || state.tokens.find(token => token.tokenAddress === mint)
+    const live = state.tokens.find(token => token.tokenAddress === mint)
+      || marketUpdates.get(mint)
       || {};
+    realtimeTokenMeta.set(mint, {
+      tokenAddress: mint,
+      symbol: String(live.symbol || tracked.symbol || `${mint.slice(0, 4)}…${mint.slice(-4)}`),
+      name: String(live.name || tracked.name || "Token SPL"),
+      dexId: String(live.dexId || tracked.dexId || "Solana"),
+      pairAddress: String(live.pairAddress || tracked.pairAddress || ""),
+      quoteSymbol: String(live.quoteSymbol || "SOL"),
+      priceUsd: n(live.priceUsd, n(tracked.lastPriceUsd)),
+      marketCap: n(live.marketCap, n(tracked.lastMarketCap))
+    });
     const quantity = n(tokenBalance.quantity);
     const priceUsd = n(live.priceUsd, n(tracked.lastPriceUsd));
     const currentMarketCap = n(live.marketCap, n(tracked.lastMarketCap));
@@ -2529,7 +2822,10 @@ async function realPortfolio(wallet) {
       realizedPnlUsd: n(tracked.realizedPnlUsd),
       pnlPct: costBasisUsd > 0 ? unrealizedPnlUsd / costBasisUsd * 100 : 0,
       trackedByApp: costBasisUsd > 0,
-      liveUpdatedAt: n(live.liveUpdatedAt, Date.now())
+      liveUpdatedAt: n(live.liveUpdatedAt, Date.now()),
+      marketSource: live.marketSource || "DEX REST",
+      marketSourceAt: n(live.marketSourceAt, n(live.liveUpdatedAt, Date.now())),
+      marketReceivedAt: n(live.marketReceivedAt, Date.now())
     });
   }
 
@@ -3974,7 +4270,8 @@ server.listen(CONFIG.port, CONFIG.host, () => {
   console.log(`  Basic Auth: ${CONFIG.appPassword ? `BẬT (${CONFIG.appUsername})` : "TẮT"}`);
   console.log(`  Chế độ: ${CONFIG.mockMode ? "MOCK" : "LIVE"}`);
   console.log(`  Quét discovery mỗi: ${(CONFIG.scanIntervalMs / 1000).toFixed(0)} giây`);
-  console.log(`  Giá/MC nhanh mỗi: ${(CONFIG.fastTickerMs / 1000).toFixed(1)} giây · tối đa ${CONFIG.fastTickerMaxTokens} token`);
+  console.log(`  Giá/MC REST fallback: ${(CONFIG.fastTickerMs / 1000).toFixed(1)} giây · tối đa ${CONFIG.fastTickerMaxTokens} token`);
+  console.log(`  Birdeye WS: ${birdeyeStatus.configured ? `BẬT · tối đa ${CONFIG.birdeyeWsMaxTokens} token · MC=${CONFIG.birdeyeMcMode}` : "TẮT (thiếu BIRDEYE_API_KEY)"}`);
   console.log(`  Gecko mỗi: ${(CONFIG.geckoRefreshMs / 1000).toFixed(0)} giây · ${CONFIG.geckoPages} trang`);
   console.log(`  RPC audit: ${CONFIG.rpcAudit ? "BẬT" : "TẮT"}`);
   console.log(`  Paper quote: ${CONFIG.mockMode ? "MOCK" : CONFIG.jupiterApiKey ? "JUPITER V2/V1 + DEX FALLBACK" : "DEX POOL FALLBACK (chưa có Jupiter key)"}`);
@@ -3984,6 +4281,7 @@ server.listen(CONFIG.port, CONFIG.host, () => {
   console.log("=================================================\n");
   if (CONFIG.autoOpen && !CONFIG.railwayEnvironment && !process.env.RAILWAY_PROJECT_ID) openBrowser(localUrl);
   performScan(false);
+  connectBirdeyeWebSocket();
   fastTickerTimer = setTimeout(runFastTicker, Math.min(CONFIG.fastTickerMs, 1200));
 });
 
@@ -4051,6 +4349,10 @@ function gracefulShutdown(signal) {
 
   clearTimeout(scanTimer);
   clearTimeout(fastTickerTimer);
+  clearTimeout(birdeyeReconnectTimer);
+  clearTimeout(birdeyeResubscribeTimer);
+  clearTimeout(realtimeDeltaTimer);
+  try { birdeyeSocket?.close(1000, "shutdown"); } catch {}
   for (const client of clients) {
     try { client.end(); } catch {}
   }
