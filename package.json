@@ -1,0 +1,15 @@
+{
+  "name": "solana-memecoin-trader-railway",
+  "version": "3.8.1",
+  "private": true,
+  "description": "Railway Solana MemeCoin Trader with profile-persistent hidden meme management",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "mock": "node server.js --mock",
+    "railway": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Solana Memecoin Scanner realtime" />
+  <title>Meme Trader v3.8 Railway · Quick Presets + REAL Fee Fix</title>
+  <link rel="stylesheet" href="/styles.css?v=3.8.0" />
+</head>
+<body>
+  <div class="noise"></div>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">M</div>
+      <div>
+        <h1>Meme Scanner</h1>
+        <p>Solana · REAL + PAPER v3.8 Railway · Railway HTTPS</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <div id="connectionPill" class="pill pending"><span></span>Đang kết nối</div>
+      <div id="fastTickerPill" class="pill fast"><span></span>Giá/MC 1s</div>
+      <div class="trade-mode-switch" role="group" aria-label="Chế độ giao dịch">
+        <button id="paperModeButton" class="active">ẢO</button>
+        <button id="realModeButton">REAL</button>
+      </div>
+      <button id="phantomButton" class="button phantom-button">👻 Kết nối Phantom</button>
+      <button id="profileButton" class="button top-profile-button">👤 <span id="topProfileName">Profile</span></button>
+      <button id="depositButton" class="button">＋ Nạp $</button>
+      <button id="historyButton" class="button">Lịch sử</button>
+      <button id="hiddenMemesButton" class="button hidden-memes-top-button">🙈 Đang ẩn <span id="hiddenMemesCount">0</span></button>
+      <button id="pnlButton" class="button">PNL</button>
+      <button id="instantPanelButton" class="button instant-top-button">⚡ Quick Trade</button>
+      <button id="paperScrollButton" class="button">Ví thử</button>
+      <button id="scanButton" class="button primary">Quét ngay</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div>
+        <div class="eyebrow">BỘ LỌC MEMECOIN REALTIME</div>
+        <h2>Tìm cơ hội trước khi<br><span>đám đông nhìn thấy.</span></h2>
+        <p class="hero-copy">
+          Quét pool mới, chấm điểm dòng tiền và loại token có dấu hiệu rủi ro.
+          Dùng SOL/USD ảo để tập giao dịch bằng quote, phí và dữ liệu thị trường thật.
+        </p>
+      </div>
+      <div class="scan-orb">
+        <div class="orb-ring"></div>
+        <div class="orb-core">
+          <strong id="orbCount">0</strong>
+          <span>token đã quét</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="stats-grid">
+      <article class="stat-card">
+        <span>Đang hiển thị</span>
+        <strong id="visibleCount">0</strong>
+        <small id="sourceLabel">Đang lấy dữ liệu…</small>
+      </article>
+      <article class="stat-card">
+        <span>Điểm từ 72</span>
+        <strong id="strongCount">0</strong>
+        <small>Cần kiểm tra lại trước khi mua</small>
+      </article>
+      <article class="stat-card">
+        <span>Volume 5 phút</span>
+        <strong id="volumeTotal">$0</strong>
+        <small>Dòng tiền của token đang lọc</small>
+      </article>
+      <article class="stat-card">
+        <span>Lần quét tiếp</span>
+        <strong id="countdown">--</strong>
+        <small id="updatedText">Chưa có dữ liệu</small>
+      </article>
+    </section>
+
+
+    <section id="paperWallet" class="paper-wallet">
+      <div class="paper-head">
+        <div>
+          <div class="eyebrow"><span id="walletModeEyebrow">PAPER TRADING · KHÔNG DÙNG TIỀN THẬT</span></div>
+          <h3 id="walletModeTitle">Ví giao dịch thử</h3>
+          <p id="paperStatus">Đang tải số dư và giá SOL…</p>
+          <div id="phantomConnectPanel" class="phantom-connect-panel hidden">
+            <div>
+              <strong id="phantomConnectTitle">Kết nối Phantom để đọc số dư thật</strong>
+              <p id="phantomConnectDetail">Trang chưa nhận được địa chỉ ví Solana.</p>
+              <code id="phantomDiagnostics">Provider: đang kiểm tra…</code>
+            </div>
+            <div class="phantom-connect-actions">
+              <button id="walletConnectButton" class="button phantom-connect-primary">👻 Kết nối Phantom ngay</button>
+              <button id="walletRetryButton" class="button">↻ Dò lại</button>
+            </div>
+          </div>
+        </div>
+        <div class="paper-controls">
+          <label>Slippage
+            <select id="paperSlippage">
+              <option value="0">Auto Jupiter</option>
+              <option value="100" selected>1%</option>
+              <option value="300">3%</option>
+              <option value="500">5%</option>
+              <option value="1000">10%</option>
+            </select>
+          </label>
+          <label>Khớp mô phỏng
+            <select id="paperFillMode">
+              <option value="quote">Giá quote</option>
+              <option value="mid" selected>Trung bình</option>
+              <option value="worst">Xấu nhất</option>
+            </select>
+          </label>
+          <button id="depositPaperButton" class="button">＋ Nạp USD ảo</button>
+          <button id="openPnlPaperButton" class="button">PNL Calendar</button>
+          <button id="resetPaperButton" class="button danger-soft">Reset ví</button>
+        </div>
+      </div>
+
+      <div class="paper-summary">
+        <article><span>Tổng tài sản</span><strong id="paperEquity">$0</strong><small id="paperTotalPnl">PnL $0</small></article>
+        <article><span id="cashBalanceLabel">USD/USDC ảo</span><strong id="paperUsd">$0</strong><small id="cashBalanceNote">Tiền mặt mô phỏng</small></article>
+        <article><span id="solBalanceLabel">SOL ảo</span><strong id="paperSol">0 SOL</strong><small id="paperSolValue">$0</small></article>
+        <article><span>Vị thế meme</span><strong id="paperPositionsCount">0</strong><small id="paperFees">Phí $0</small></article>
+      </div>
+
+      <div class="paper-body">
+        <div class="paper-convert">
+          <div class="subhead"><h4>Đổi vốn ảo</h4><span>Dùng quote Jupiter thật</span></div>
+          <div class="convert-row">
+            <input id="convertAmount" type="number" min="0.1" step="1" value="10">
+            <button class="button convert-button" data-side="usd_to_sol">$ → SOL</button>
+            <button class="button convert-button" data-side="sol_to_usd">SOL → $</button>
+          </div>
+          <p>Gas, phí nền tảng, price impact và mức nhận tối thiểu sẽ hiện trước khi xác nhận.</p>
+        </div>
+
+      </div>
+      <details class="paper-history-details">
+        <summary>Lịch sử gần đây <span id="paperTradeCount">0 lệnh</span> · <button type="button" id="openFullHistoryInline" class="inline-summary-button">Mở toàn bộ</button></summary>
+        <div id="paperHistory" class="paper-history"></div>
+      </details>
+    </section>
+
+    <section id="positionsBoard" class="positions-board">
+      <div class="positions-board-head">
+        <div>
+          <div class="eyebrow">MINT-BASED POSITIONS · KHÔNG GỘP THEO TÊN</div>
+          <h3>Vị thế đang mở</h3>
+          <p>Mỗi vị thế được định danh bằng contract/mint. Hai meme trùng tên vẫn là hai hàng riêng.</p>
+        </div>
+        <div class="positions-head-stats">
+          <span id="positionsModeBadge">PAPER</span>
+          <strong id="paperUnrealized">PnL chưa chốt $0</strong>
+        </div>
+      </div>
+      <div id="paperPositions" class="paper-positions positions-long-list">
+        <div class="paper-empty">Chưa có vị thế.</div>
+      </div>
+    </section>
+
+    <section class="workspace">
+      <aside class="filters">
+        <div class="panel-head">
+          <div>
+            <h3>Bộ lọc</h3>
+            <p>Lọc ngay trên dashboard</p>
+          </div>
+          <button id="resetButton" class="link-button">Đặt lại</button>
+        </div>
+
+        <label class="field">
+          <span>Chiến lược</span>
+          <select id="preset">
+            <option value="balanced">Cân bằng</option>
+            <option value="early">Bắt sớm</option>
+            <option value="safe">An toàn hơn</option>
+            <option value="custom">Tùy chỉnh</option>
+          </select>
+        </label>
+
+        <div class="field two">
+          <label><span>Tuổi từ (phút)</span><input id="minAge" type="number" min="0" value="2"></label>
+          <label><span>Đến (phút)</span><input id="maxAge" type="number" min="1" value="180"></label>
+        </div>
+
+        <label class="field">
+          <span>Thanh khoản tối thiểu (USD)</span>
+          <input id="minLiquidity" type="number" min="0" step="1000" value="12000">
+        </label>
+
+        <div class="field two">
+          <label><span>MC tối thiểu</span><input id="minMcap" type="number" min="0" step="1000" value="25000"></label>
+          <label><span>MC tối đa</span><input id="maxMcap" type="number" min="0" step="1000" value="1500000"></label>
+        </div>
+
+        <label class="field">
+          <span>Volume 5 phút tối thiểu</span>
+          <input id="minVolume5m" type="number" min="0" step="500" value="2000">
+        </label>
+
+        <div class="field two">
+          <label><span>Giao dịch 5m</span><input id="minTxns5m" type="number" min="0" value="15"></label>
+          <label><span>Điểm tối thiểu</span><input id="minScore" type="number" min="0" max="100" value="55"></label>
+        </div>
+
+        <div class="field two">
+          <label><span>Mua/Bán từ</span><input id="minBuyRatio" type="number" min="0" step="0.1" value="1"></label>
+          <label><span>Tăng 5m tối đa</span><input id="maxChange5m" type="number" step="1" value="35"></label>
+        </div>
+
+        <label class="field">
+          <span>Khả năng là meme</span>
+          <input id="minMemeScore" type="range" min="0" max="80" step="5" value="25">
+          <div class="range-caption"><span>Không bắt buộc</span><strong id="memeScoreValue">25</strong></div>
+        </label>
+
+        <label class="check-row">
+          <input id="hideMintRisk" type="checkbox" checked>
+          <span>Ẩn token còn Mint/Freeze authority</span>
+        </label>
+
+        <label class="check-row">
+          <input id="onlySocial" type="checkbox">
+          <span>Chỉ token có website/social</span>
+        </label>
+
+        <div class="warning">
+          <strong>Không phải tín hiệu mua.</strong>
+          <p>Memecoin có thể mất toàn bộ giá trị. Luôn kiểm tra contract, holder và thanh khoản.</p>
+        </div>
+      </aside>
+
+      <section class="results">
+        <div class="results-head">
+          <div>
+            <h3>Token phù hợp</h3>
+            <p id="resultMessage">Đang đợi lần quét đầu tiên…</p>
+          </div>
+          <div class="result-tools">
+            <input id="searchInput" type="search" placeholder="Tên, symbol hoặc contract">
+            <select id="sortSelect">
+              <option value="score">Điểm cao nhất</option>
+              <option value="newest">Mới nhất</option>
+              <option value="volume">Volume 5m</option>
+              <option value="liquidity">Thanh khoản</option>
+              <option value="momentum">Tăng 5m</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="errorBox" class="error-box hidden"></div>
+        <div id="cards" class="token-grid">
+          <div class="empty-state">
+            <div class="loader"></div>
+            <h4>Đang quét pool mới</h4>
+            <p>Kết nối GeckoTerminal và DEX Screener…</p>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+
+
+  <aside id="instantTradePanel" class="instant-panel">
+    <div class="instant-panel-head">
+      <div class="instant-brand"><span class="instant-bolt">⚡</span><div><strong>QUICK TRADE</strong><small id="instantModeLabel">PAPER · khớp một chạm</small></div></div>
+      <div class="instant-head-actions">
+        <label class="instant-arm"><input id="instantArmed" type="checkbox" checked><span>ON</span></label>
+        <button id="instantCollapse" class="instant-icon-button">—</button>
+        <button id="instantClose" class="instant-icon-button">×</button>
+      </div>
+    </div>
+    <div id="instantPanelBody" class="instant-panel-body">
+      <div class="instant-token-row">
+        <div><span id="instantTokenSymbol">CHỌN TOKEN</span><small id="instantTokenMeta">Bấm ⚡ Trade nhanh trên token</small></div>
+        <div class="instant-token-price"><strong id="instantTokenPrice">—</strong><small id="instantTokenMc">MC —</small></div>
+      </div>
+      <section class="instant-side">
+        <div class="instant-side-head"><strong>Mua</strong><div class="instant-profiles"><button class="instant-profile active" data-profile="P1">P1</button><button class="instant-profile" data-profile="P2">P2</button><button class="instant-profile" data-profile="P3">P3</button><button id="instantEditProfiles" class="instant-profile-edit" title="Chỉnh số SOL P1/P2/P3">✎</button></div><span id="instantSolBalance">0 SOL</span></div>
+        <div id="instantBuyButtons" class="instant-button-grid"></div>
+        <div class="instant-info-line"><span>🏃 <b id="instantSlipLabel">1%</b></span><span>⛽ <b id="instantGasLabel">—</b></span><span>🌊 <b id="instantImpactLabel">—</b></span><span>🛡 <b id="instantRiskLabel">—</b></span><label><input id="instantAdvancedToggle" type="checkbox"> Adv.</label></div>
+      </section>
+      <section class="instant-side instant-sell-side">
+        <div class="instant-side-head"><strong>Bán</strong><span id="instantPositionLabel">Chưa có vị thế</span></div>
+        <div class="instant-button-grid sell-grid"><button class="instant-sell-button" data-percent="10">10%</button><button class="instant-sell-button" data-percent="25">25%</button><button class="instant-sell-button" data-percent="50">50%</button><button class="instant-sell-button" data-percent="100">100%</button></div>
+        <div class="instant-mc-row"><span>MC mua TB <b id="instantEntryMc">—</b></span><span>MC hiện tại <b id="instantCurrentMc">—</b></span></div>
+        <div class="instant-info-line"><span>🏃 <b id="instantSellSlipLabel">1%</b></span><span>⛽ <b id="instantSellGasLabel">—</b></span><span>🌊 <b id="instantSellImpactLabel">—</b></span><span id="instantEntryLabel">Giá vốn —</span></div>
+      </section>
+      <div id="instantAdvanced" class="instant-advanced hidden"><label>Trượt giá<select id="instantSlippage"><option value="100">1%</option><option value="300">3%</option><option value="500">5%</option><option value="1000">10%</option></select></label><label>Khớp mô phỏng<select id="instantFillMode"><option value="quote">Giá quote</option><option value="mid" selected>Trung bình</option><option value="worst">Xấu nhất</option></select></label><label class="instant-hotkey-label"><input id="instantHotkeys" type="checkbox"> Phím nóng 1–4 / Q–R</label></div>
+      <div id="instantProgress" class="instant-progress hidden"><span class="mini-spinner"></span><strong>Đang lấy giá mới và khớp lệnh ảo…</strong></div>
+      <div id="instantMessage" class="instant-message">PAPER: tiền ảo. REAL: Phantom sẽ hiện cửa sổ ký cho từng giao dịch.</div>
+      <div class="instant-footer-stats"><div><span>Số dư</span><strong id="instantEquity">—</strong></div><div><span>Đã mua</span><strong id="instantBought">—</strong></div><div><span>Đã bán</span><strong id="instantSold">—</strong></div><div><span>PnL</span><strong id="instantPnl">—</strong></div></div>
+    </div>
+  </aside>
+
+
+  <div id="instantPresetModal" class="modal hidden app-popup" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-popup="instantPresetModal"></div>
+    <div class="modal-card popup-card instant-preset-popup">
+      <div class="modal-head"><div><span class="eyebrow">QUICK TRADE PRESETS</span><h3>Chỉnh P1, P2, P3</h3></div><button class="modal-close" data-close-popup="instantPresetModal">×</button></div>
+      <p class="popup-help">Mỗi profile có 4 mức mua tính bằng SOL. Cấu hình được lưu ngoài source code nên vẫn còn sau khi cập nhật bản mới.</p>
+      <div id="instantPresetEditor" class="instant-preset-editor"></div>
+      <div class="instant-preset-actions"><button id="resetInstantPresets" class="button">Khôi phục mặc định</button><button id="saveInstantPresets" class="button primary">Lưu P1/P2/P3</button></div>
+      <p class="popup-help">Trong REAL, nút chỉ kiểm tra số SOL mua + khoản dự phòng nhỏ. Phí/rent thật chỉ được biết sau khi Jupiter tạo transaction.</p>
+    </div>
+  </div>
+
+  <div id="hiddenMemesModal" class="modal hidden app-popup" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-popup="hiddenMemesModal"></div>
+    <div class="modal-card popup-card wide-popup-card hidden-memes-popup">
+      <div class="modal-head">
+        <div><span class="eyebrow">HIDDEN BY MINT / CONTRACT</span><h3>Meme đang ẩn</h3></div>
+        <button class="modal-close" data-close-popup="hiddenMemesModal">×</button>
+      </div>
+      <div class="hidden-memes-toolbar">
+        <div>
+          <strong id="hiddenMemesSummary">0 meme đang ẩn</strong>
+          <p>Ẩn chỉ loại meme khỏi scanner. Vị thế, lịch sử và nút bán vẫn giữ nguyên.</p>
+        </div>
+        <div class="hidden-memes-toolbar-actions">
+          <input id="hiddenMemesSearch" type="search" placeholder="Tên, symbol hoặc contract">
+          <button id="restoreAllHiddenMemes" class="button">Mở lại tất cả</button>
+        </div>
+      </div>
+      <div id="hiddenMemesList" class="hidden-memes-list">
+        <div class="paper-empty">Chưa ẩn meme nào.</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="profileModal" class="modal hidden app-popup" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-popup="profileModal"></div>
+    <div class="modal-card popup-card profile-popup-card">
+      <div class="modal-head"><div><span class="eyebrow">PERSISTENT PROFILE</span><h3>Hồ sơ Paper Trading</h3></div><button class="modal-close" data-close-popup="profileModal">×</button></div>
+      <div class="profile-active-card">
+        <div><span>Profile đang dùng</span><strong id="profileActiveName">—</strong><small id="profileDataPath">Dữ liệu lưu ngoài thư mục code</small></div>
+        <div class="recovery-code"><span>Mã khôi phục</span><strong id="profileActiveCode">—</strong><button id="copyProfileCode" class="button">Copy</button></div>
+      </div>
+      <div class="popup-tabs"><button class="popup-tab active" data-profile-tab="list">Danh sách</button><button class="popup-tab" data-profile-tab="create">Tạo mới</button><button class="popup-tab" data-profile-tab="recover">Nhập mã</button></div>
+      <section id="profileTabList" class="profile-tab-pane"><div id="profileList" class="profile-list"></div><div class="rename-row"><input id="renameProfileInput" placeholder="Đổi tên profile"><button id="renameProfileButton" class="button">Đổi tên</button></div></section>
+      <section id="profileTabCreate" class="profile-tab-pane hidden"><label class="popup-field">Tên profile<input id="newProfileName" maxlength="40" placeholder="Ví dụ: Hành trình $100"></label><div class="popup-grid-2"><label class="popup-field">Vốn ban đầu USD<input id="newProfileUsd" type="number" value="100" min="10"></label><label class="popup-field">Tỷ lệ đổi SOL<input id="newProfileSolPct" type="number" value="90" min="0" max="100"></label></div><button id="createProfileButton" class="button primary popup-primary">Tạo profile và chuyển sang</button></section>
+      <section id="profileTabRecover" class="profile-tab-pane hidden"><label class="popup-field">Mã khôi phục<input id="recoverProfileCode" placeholder="MEME-XXXX-XXXX-XXXX"></label><button id="recoverProfileButton" class="button primary popup-primary">Mở profile bằng mã</button><p class="popup-help">Mã dùng để tìm lại profile đã lưu trên máy này sau khi thay hoặc ghi đè source code.</p></section>
+    </div>
+  </div>
+
+  <div id="depositModal" class="modal hidden app-popup" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-popup="depositModal"></div>
+    <div class="modal-card popup-card small-popup-card">
+      <div class="modal-head"><div><span class="eyebrow">PAPER CAPITAL</span><h3>Nạp USD ảo</h3></div><button class="modal-close" data-close-popup="depositModal">×</button></div>
+      <div class="deposit-current"><span>Số dư USD hiện tại</span><strong id="depositCurrentUsd">$0</strong></div>
+      <div class="deposit-presets"><button data-deposit="10">+$10</button><button data-deposit="25">+$25</button><button data-deposit="50">+$50</button><button data-deposit="100">+$100</button></div>
+      <label class="popup-field">Số tiền<input id="depositAmount" type="number" min="0.01" value="100" step="1"></label>
+      <label class="popup-field">Ghi chú<input id="depositNote" maxlength="120" value="Nạp vốn paper"></label>
+      <button id="confirmDepositButton" class="button primary popup-primary">Nạp vào profile hiện tại</button>
+      <p class="popup-help">Khoản nạp tăng vốn gốc, không được tính là lợi nhuận.</p>
+    </div>
+  </div>
+
+  <div id="historyModal" class="modal hidden app-popup" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-popup="historyModal"></div>
+    <div class="modal-card popup-card wide-popup-card">
+      <div class="modal-head"><div><span class="eyebrow">TRADE JOURNAL</span><h3>Lịch sử giao dịch</h3></div><button class="modal-close" data-close-popup="historyModal">×</button></div>
+      <div class="history-toolbar"><div class="range-switch"><button class="active" data-history-range="all">Tất cả</button><button data-history-range="day">Hôm nay</button><button data-history-range="week">7 ngày</button><button data-history-range="month">30 ngày</button></div><select id="historyTypeFilter"><option value="all">Mọi loại</option><option value="BUY">Mua</option><option value="SELL">Bán</option><option value="DEPOSIT">Nạp tiền</option><option value="USD_TO_SOL">Đổi USD → SOL</option><option value="SOL_TO_USD">Đổi SOL → USD</option></select></div>
+      <div class="history-summary-strip"><div><span>Số giao dịch</span><strong id="historyCount">0</strong></div><div><span>PNL đã chốt</span><strong id="historyRealized">$0</strong></div><div><span>Phí</span><strong id="historyFees">$0</strong></div><div><span>Win rate</span><strong id="historyWinRate">0%</strong></div></div>
+      <div id="fullHistoryList" class="full-history-list"></div>
+    </div>
+  </div>
+
+  <div id="pnlModal" class="modal hidden app-popup" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-popup="pnlModal"></div>
+    <div class="modal-card popup-card pnl-popup-card">
+      <div class="modal-head pnl-head"><div><span class="eyebrow">PNL CALENDAR · USD</span><h3 id="pnlMonthTitle">—</h3></div><div class="pnl-nav"><button id="pnlPrevMonth">‹</button><button id="pnlToday">Hôm nay</button><button id="pnlNextMonth">›</button><button class="modal-close" data-close-popup="pnlModal">×</button></div></div>
+      <div class="pnl-overview"><div><span>Hôm nay</span><strong id="pnlTodayValue">$0</strong></div><div><span>7 ngày</span><strong id="pnlWeekValue">$0</strong></div><div><span>Tháng đang xem</span><strong id="pnlMonthValue">$0</strong></div><div><span>Tổng PNL</span><strong id="pnlAllValue">$0</strong></div></div>
+      <div class="calendar-weekdays"><span>T2</span><span>T3</span><span>T4</span><span>T5</span><span>T6</span><span>T7</span><span>CN</span></div>
+      <div id="pnlCalendar" class="pnl-calendar"></div>
+      <div class="pnl-footer"><span>Chuỗi ngày lãi hiện tại: <strong id="currentWinStreak">0 ngày</strong></span><span>Chuỗi lãi tốt nhất: <strong id="bestWinStreak">0 ngày</strong></span><span>Ngày tốt nhất: <strong id="bestPnlDay">—</strong></span></div>
+    </div>
+  </div>
+
+  <div id="tradeModal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <div class="modal-head">
+        <div><span class="eyebrow">PAPER ORDER</span><h3 id="modalTitle">Xác nhận giao dịch thử</h3></div>
+        <button class="modal-close" data-close-modal>×</button>
+      </div>
+      <div id="quoteLoading" class="quote-loading"><div class="loader"></div><p>Đang lấy quote Jupiter mới nhất…</p></div>
+      <div id="quoteError" class="error-box hidden"></div>
+      <div id="quoteContent" class="quote-content hidden">
+        <div class="quote-main"><span>Bạn trả</span><strong id="quotePay">—</strong><i>→</i><span>Bạn nhận mô phỏng</span><strong id="quoteReceive">—</strong></div>
+        <div class="quote-grid">
+          <div><span>Giá trị đầu vào</span><strong id="quoteInUsd">—</strong></div>
+          <div><span>Giá trị đầu ra</span><strong id="quoteOutUsd">—</strong></div>
+          <div><span>Price impact</span><strong id="quoteImpact">—</strong></div>
+          <div><span>Slippage tolerance</span><strong id="quoteSlippage">—</strong></div>
+          <div><span>Phí mạng</span><strong id="quoteGas">—</strong></div>
+          <div><span>Phí Jupiter</span><strong id="quotePlatformFee">—</strong></div>
+          <div><span>Nhận tối thiểu</span><strong id="quoteMinimum">—</strong></div>
+          <div><span>Router</span><strong id="quoteRouter">—</strong></div>
+        </div>
+        <div id="quoteRoute" class="route-note"></div>
+        <div class="simulation-note">Không có transaction nào được ký hoặc gửi. Kết quả thực tế không thể biết chính xác nếu chưa giao dịch on-chain.</div>
+        <button id="confirmPaperTrade" class="button primary modal-confirm">Xác nhận giao dịch ảo</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="https://unpkg.com/@solana/web3.js@1.98.4/lib/index.iife.min.js"></script>
+  <script src="/app.js?v=3.8.0"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+BẮT BUỘC:
+APP_USERNAME=cua
+APP_PASSWORD=<mật khẩu dài ngẫu nhiên>
+AUTO_OPEN=false
+HOST=0.0.0.0
+MEME_TRADER_DATA_DIR=/data
+SOLANA_RPC_URL=<Helius hoặc QuickNode Mainnet RPC>
+JUPITER_API_KEY=<Jupiter API key>
+
+KHUYẾN NGHỊ:
+SOLANA_RPC_FALLBACK_URLS=https://api.mainnet.solana.com
+GECKO_ENABLED=false
+FAST_TICKER_MS=1500
+FAST_TICKER_MAX_TOKENS=90
+SCAN_INTERVAL_MS=10000
+MOCK_MODE=false
+
+KHÔNG TẠO:
+PORT
+RAILWAY_VOLUME_MOUNT_PATH
+
+Railway tự inject hai biến trên.
