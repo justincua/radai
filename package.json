@@ -1,8 +1,8 @@
 {
   "name": "solana-memecoin-trader-railway",
-  "version": "3.8.1",
+  "version": "3.9.0",
   "private": true,
-  "description": "Railway Solana MemeCoin Trader with profile-persistent hidden meme management",
+  "description": "Railway Solana meme trader with WSOL upfront rent accounting and deterministic self-pay simulation diagnostics",
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",

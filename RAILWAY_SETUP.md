@@ -1,4 +1,4 @@
-# Deploy MemeCoin Trader v3.8.1 lên Railway
+# Deploy MemeCoin Trader v3.9 lên Railway
 
 Bản này chạy cả **PAPER + REAL Phantom** trên Railway. Railway cấp HTTPS nên Phantom có thể inject provider trên domain công khai.
 
@@ -148,3 +148,12 @@ Sau deploy vẫn phải tạo Variables, Volume `/data` và Generate Domain tron
 Push code mới lên GitHub. Railway tự redeploy; Volume `/data` giữ lại profile, PNL và lịch sử.
 
 Do service có Volume, Railway có thể có một khoảng downtime ngắn lúc redeploy và không hỗ trợ replicas.
+
+
+### Variables self-pay v3.9
+
+```env
+REAL_INCLUDE_WSOL_UPFRONT_RENT=true
+REAL_SELF_PAY_SAFETY_BUFFER_LAMPORTS=100000
+REAL_SIMULATION_LOG_LIMIT=30
+```

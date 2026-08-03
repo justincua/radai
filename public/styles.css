@@ -602,3 +602,11 @@ body.real-mode #paperFillMode { display: none; }
     grid-template-columns: 1fr 1fr;
   }
 }
+
+
+/* v3.9 — detailed REAL simulation errors */
+.instant-message.error {
+  max-height: 150px;
+  overflow-y: auto;
+  white-space: normal;
+}

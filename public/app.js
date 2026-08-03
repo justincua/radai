@@ -664,7 +664,7 @@ async function executeRealInstantTrade(payload) {
     const selfPay = order.executionMode === "rpc-self-pay";
     setInstantMessage(
       selfPay
-        ? "Đã ký. Đang gửi transaction tự trả gas qua Solana RPC…"
+        ? "Đã ký. Đang mô phỏng lần cuối; chỉ gửi khi transaction hợp lệ…"
         : "Đã ký. Jupiter đang gửi và xác nhận transaction…",
       "warning"
     );
@@ -683,7 +683,29 @@ async function executeRealInstantTrade(payload) {
     if (result.explorerUrl) window.open(result.explorerUrl, "_blank", "noopener,noreferrer");
   } catch (error) {
     const message = error?.code === 4001 ? "Bạn đã từ chối ký trong Phantom." : error.message;
-    if (error.code === "JUPITER_GASLESS_MINIMUM") {
+    if (error.code === "SELF_PAY_INSUFFICIENT_SOL") {
+      const d = error.details || {};
+      const logs = Array.isArray(d.logs) ? d.logs : [];
+      const wsol = Number(d.gasContext?.wsolUpfrontRentSol || d.orderFees?.wsolUpfrontRentLamports / 1e9 || 0);
+      const ata = Number(d.gasContext?.outputAtaRentSol || d.orderFees?.outputAtaRentLamports / 1e9 || 0);
+      const extra = [
+        ata > 0 ? `ATA ${ata.toFixed(6)} SOL` : "",
+        wsol > 0 ? `WSOL tạm ${wsol.toFixed(6)} SOL (được hoàn lại)` : ""
+      ].filter(Boolean).join(" · ");
+      setInstantMessage(`${message}${extra ? ` · ${extra}` : ""}`, "error");
+      toast("Không đủ SOL tại bước mô phỏng; transaction chưa được gửi");
+      console.error("Self-pay simulation logs:", logs);
+    } else if (error.code === "SELF_PAY_INSUFFICIENT_TOKEN") {
+      setInstantMessage(message, "error");
+      toast("Số dư token đã thay đổi; tải lại và lấy quote mới");
+    } else if (error.code === "SELF_PAY_SIMULATION_FAILED") {
+      setInstantMessage(`${message} Mở Console để xem simulation logs.`, "error");
+      console.error("Self-pay simulation details:", error.details);
+      toast("Transaction không vượt qua mô phỏng và chưa được gửi");
+    } else if (error.code === "SELF_PAY_SIMULATION_RPC_FAILED") {
+      setInstantMessage(message, "error");
+      toast("RPC tạm thời không mô phỏng được transaction");
+    } else if (error.code === "JUPITER_GASLESS_MINIMUM") {
       const d = error.details || {};
       const topUp = Number(d.suggestedTopUpSol || d.shortfallSol || 0);
       const ata = d.ataExists

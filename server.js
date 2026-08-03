@@ -44,7 +44,7 @@ const CONFIG = {
     "https://api.mainnet.solana.com"
   ].map(value => String(value || "").trim()).filter(Boolean).map(trimSlash))],
   jupiterApiKey: (process.env.JUPITER_API_KEY || "").trim(),
-  appVersion: "3.8.1-railway",
+  appVersion: "3.9.0-railway",
   realSlippageMode: ["rtse", "fixed"].includes(String(process.env.REAL_SLIPPAGE_MODE || "").toLowerCase())
     ? String(process.env.REAL_SLIPPAGE_MODE).toLowerCase()
     : "rtse",
@@ -53,6 +53,9 @@ const CONFIG = {
   realSelfPayFallback: boolEnv("REAL_SELF_PAY_FALLBACK", true),
   realV1MaxPriorityLamports: intEnv("REAL_V1_MAX_PRIORITY_LAMPORTS", 100_000, 0, 10_000_000),
   realTokenAccountSize: intEnv("REAL_TOKEN_ACCOUNT_SIZE", 165, 165, 4096),
+  realIncludeWsolUpfrontRent: boolEnv("REAL_INCLUDE_WSOL_UPFRONT_RENT", true),
+  realSelfPaySafetyBufferLamports: intEnv("REAL_SELF_PAY_SAFETY_BUFFER_LAMPORTS", 100_000, 0, 20_000_000),
+  realSimulationLogLimit: intEnv("REAL_SIMULATION_LOG_LIMIT", 30, 5, 100),
   realGaslessDefaultMinUsd: floatEnv("REAL_GASLESS_DEFAULT_MIN_USD", 5, 0.01, 1_000),
   realWalletPollMs: intEnv("REAL_WALLET_POLL_MS", 2_000, 1_000, 30_000),
   realOrderTtlMs: intEnv("REAL_ORDER_TTL_MS", 90_000, 15_000, 300_000),
@@ -507,6 +510,8 @@ async function rpcAt(endpoint, method, params) {
   if (result?.error) {
     const error = new Error(result.error.message || "Solana RPC lỗi");
     error.rpcCode = result.error.code;
+    error.rpcData = result.error.data ?? null;
+    error.rpcEndpoint = endpoint;
     error.rpcMethod = method;
     error.rpcRequestId = requestId;
     error.rpcRequestBytes = payloadBuffer.byteLength;
@@ -532,6 +537,19 @@ async function rpcAt(endpoint, method, params) {
   return result.result;
 }
 
+
+function isDeterministicTransactionRpcError(error, method) {
+  const code = Number(error?.rpcCode);
+  const message = String(error?.message || "").toLowerCase();
+  const transactionMethod = ["sendTransaction", "simulateTransaction"].includes(String(method));
+  return transactionMethod && (
+    (code === -32002 && message.includes("transaction simulation failed")) ||
+    message.includes("signature verification failure") ||
+    message.includes("blockhash not found") ||
+    message.includes("insufficient funds")
+  );
+}
+
 async function rpc(method, params) {
   const candidates = [activeRpcUrl, ...CONFIG.rpcUrls].filter((value, index, array) => value && array.indexOf(value) === index);
   const failures = [];
@@ -544,7 +562,7 @@ async function rpc(method, params) {
       return result;
     } catch (error) {
       const detail = error.cause?.code || error.code || error.statusCode || error.rpcCode || "ERROR";
-      failures.push({
+      const failure = {
         endpoint: rpcEndpointLabel(endpoint),
         code: String(detail),
         message: String(error.message || error).slice(0, 220),
@@ -552,7 +570,18 @@ async function rpc(method, params) {
         requestId: error.rpcRequestId ?? null,
         requestIdType: error.rpcRequestId == null ? null : typeof error.rpcRequestId,
         requestBytes: error.rpcRequestBytes ?? null
-      });
+      };
+      failures.push(failure);
+
+      // A simulation failure is caused by the transaction/account state, not by
+      // the RPC provider. Running the exact same signed transaction on a second
+      // RPC only produces the same error and a misleading "cannot connect" message.
+      if (isDeterministicTransactionRpcError(error, method)) {
+        activeRpcUrl = endpoint;
+        lastRpcFailures = failures;
+        error.rpcFailures = failures;
+        throw error;
+      }
     }
   }
 
@@ -1628,7 +1657,8 @@ async function getJupiterV1Quote({ inputMint, outputMint, amountRaw, slippageBps
     amount: String(amountRaw),
     swapMode: "ExactIn",
     slippageBps: String(appliedSlippage),
-    restrictIntermediateTokens: "true"
+    restrictIntermediateTokens: "true",
+    instructionVersion: "V2"
   });
 
   const quote = await fetchJson(`${CONFIG.jupiterV1BaseUrl}/quote?${params}`, {
@@ -2704,31 +2734,64 @@ async function estimateRealSelfPayGas({
   gaslessMessage
 }) {
   const isBuy = side === "buy";
-  const ataExists = isBuy
+  const outputAtaExists = isBuy
     ? await walletHasTokenAccountForMint(wallet, tokenAddress)
     : true;
-  const ataRentLamports = isBuy && !ataExists
-    ? await getTokenAccountRentLamports()
+  const tokenAccountRentLamports = await getTokenAccountRentLamports();
+
+  // Missing destination ATA remains on-chain after a successful buy.
+  const outputAtaRentLamports = isBuy && !outputAtaExists
+    ? tokenAccountRentLamports
     : 0;
+
+  // Jupiter wrapAndUnwrapSol=true creates a temporary WSOL token account and
+  // closes it at the end. The rent is refunded, but the wallet must have these
+  // lamports available up-front while the transaction is executing.
+  const wsolUpfrontRentLamports = CONFIG.realIncludeWsolUpfrontRent
+    ? tokenAccountRentLamports
+    : 0;
+
   const signatureLamports = CONFIG.paperBaseFeeLamports;
   const priorityLamports = CONFIG.realV1MaxPriorityLamports;
-  const estimatedFeeLamports = signatureLamports + priorityLamports + ataRentLamports;
-  const estimatedFeeSol = estimatedFeeLamports / LAMPORTS_PER_SOL;
+  const safetyBufferLamports = CONFIG.realSelfPaySafetyBufferLamports;
+
+  const nonRefundableEstimatedLamports =
+    signatureLamports + priorityLamports + outputAtaRentLamports;
+  const upfrontOnlyLamports = wsolUpfrontRentLamports + safetyBufferLamports;
+  const totalUpfrontLamports =
+    nonRefundableEstimatedLamports + upfrontOnlyLamports;
+
   const buyAmountSol = isBuy ? n(amountUi) : 0;
-  const requiredSelfPaySol = buyAmountSol + estimatedFeeSol + CONFIG.realMinSolReserve;
+  const requiredSelfPaySol =
+    buyAmountSol +
+    totalUpfrontLamports / LAMPORTS_PER_SOL +
+    CONFIG.realMinSolReserve;
   const shortfallSol = Math.max(0, requiredSelfPaySol - availableSol);
   const gaslessMinimumUsd = parseGaslessMinimumUsd(gaslessMessage);
   const tradeValueUsd = isBuy ? buyAmountSol * n(solPriceUsd) : 0;
-  const gaslessMinimumSol = n(solPriceUsd) > 0 ? gaslessMinimumUsd / solPriceUsd : 0;
+  const gaslessMinimumSol = n(solPriceUsd) > 0
+    ? gaslessMinimumUsd / solPriceUsd
+    : 0;
 
   return {
-    ataExists,
-    ataRentLamports,
-    ataRentSol: ataRentLamports / LAMPORTS_PER_SOL,
+    ataExists: outputAtaExists,
+    outputAtaExists,
+    tokenAccountRentLamports,
+    ataRentLamports: outputAtaRentLamports,
+    ataRentSol: outputAtaRentLamports / LAMPORTS_PER_SOL,
+    outputAtaRentLamports,
+    outputAtaRentSol: outputAtaRentLamports / LAMPORTS_PER_SOL,
+    wsolUpfrontRentLamports,
+    wsolUpfrontRentSol: wsolUpfrontRentLamports / LAMPORTS_PER_SOL,
+    wsolRentRefundable: wsolUpfrontRentLamports > 0,
     signatureLamports,
     priorityLamports,
-    estimatedFeeLamports,
-    estimatedFeeSol,
+    safetyBufferLamports,
+    safetyBufferSol: safetyBufferLamports / LAMPORTS_PER_SOL,
+    estimatedFeeLamports: nonRefundableEstimatedLamports,
+    estimatedFeeSol: nonRefundableEstimatedLamports / LAMPORTS_PER_SOL,
+    totalUpfrontLamports,
+    totalUpfrontSol: totalUpfrontLamports / LAMPORTS_PER_SOL,
     reserveSol: CONFIG.realMinSolReserve,
     availableSol,
     buyAmountSol,
@@ -2789,8 +2852,27 @@ async function requestMetisV1SelfPayOrder({
     timeoutMs: Math.max(CONFIG.timeoutMs, 30_000)
   });
 
+  if (swap?.error) {
+    const error = new Error(String(swap.error));
+    error.swapBuildError = swap.error;
+    throw error;
+  }
+
+  if (swap?.simulationError) {
+    const error = new Error(
+      `Jupiter đã mô phỏng và transaction self-pay thất bại: ${JSON.stringify(swap.simulationError)}`
+    );
+    error.swapSimulationError = swap.simulationError;
+    error.swapResponse = {
+      prioritizationFeeLamports: swap.prioritizationFeeLamports ?? null,
+      computeUnitLimit: swap.computeUnitLimit ?? null,
+      dynamicSlippageReport: swap.dynamicSlippageReport ?? null
+    };
+    throw error;
+  }
+
   if (!swap?.swapTransaction) {
-    throw new Error(String(swap?.error || swap?.simulationError || "Metis V1 không build được transaction self-pay"));
+    throw new Error("Metis V1 không build được transaction self-pay");
   }
 
   const requestId = `selfpay-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
@@ -2811,7 +2893,11 @@ async function requestMetisV1SelfPayOrder({
       signatureFeePayer: wallet,
       signatureFeeLamports: CONFIG.paperBaseFeeLamports,
       prioritizationFeeLamports: priorityLamports,
-      rentFeeLamports: gasContext.ataRentLamports,
+      rentFeeLamports: gasContext.outputAtaRentLamports + gasContext.wsolUpfrontRentLamports,
+      outputAtaRentLamports: gasContext.outputAtaRentLamports,
+      wsolUpfrontRentLamports: gasContext.wsolUpfrontRentLamports,
+      refundableRentLamports: gasContext.wsolUpfrontRentLamports,
+      safetyBufferLamports: gasContext.safetyBufferLamports,
       feeBps: n(quote.platformFee?.feeBps),
       platformFee: quote.platformFee || null,
       lastValidBlockHeight: swap.lastValidBlockHeight || null,
@@ -2844,6 +2930,131 @@ async function waitForSignatureConfirmation(signature, timeoutMs = 35_000) {
   throw new Error("Đã gửi transaction nhưng chưa xác nhận trong 35 giây. Kiểm tra chữ ký trên Solscan.");
 }
 
+
+function compactSimulationError(err) {
+  if (!err) return null;
+  if (typeof err === "string") return err;
+  try { return JSON.stringify(err); }
+  catch { return String(err); }
+}
+
+function simulationInstructionIndex(err) {
+  const instructionError = err?.InstructionError;
+  return Array.isArray(instructionError) ? Number(instructionError[0]) : null;
+}
+
+function lastFailedProgram(logs) {
+  for (let index = logs.length - 1; index >= 0; index--) {
+    const match = String(logs[index]).match(/^Program\s+([1-9A-HJ-NP-Za-km-z]+)\s+failed:/);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+function classifySelfPaySimulation({ simulation, pending, availableLamports }) {
+  const value = simulation?.value || simulation || {};
+  const logs = Array.isArray(value.logs) ? value.logs : [];
+  const joined = logs.join("\n");
+  const lower = joined.toLowerCase();
+  const instructionIndex = simulationInstructionIndex(value.err);
+  const failedProgram = lastFailedProgram(logs);
+
+  const transferMatch =
+    joined.match(/insufficient lamports\s+(\d+),\s*need\s+(\d+)/i) ||
+    joined.match(/insufficient lamports\s+(\d+)\s+for\s+(\d+)/i);
+  const customOne = /custom program error:\s*0x1\b/i.test(joined)
+    || /Custom["']?\s*,?\s*1/.test(compactSimulationError(value.err) || "");
+  const tokenInsufficient =
+    lower.includes("insufficient funds") &&
+    (lower.includes(TOKEN_PROGRAM_ID.toLowerCase()) ||
+     lower.includes(TOKEN_2022_PROGRAM_ID.toLowerCase()) ||
+     pending.side === "sell");
+
+  const details = {
+    simulationError: value.err || null,
+    simulationErrorText: compactSimulationError(value.err),
+    instructionIndex,
+    failedProgram,
+    unitsConsumed: n(value.unitsConsumed),
+    simulationFeeLamports: n(value.fee),
+    availableLamports,
+    availableSol: availableLamports / LAMPORTS_PER_SOL,
+    logs: logs.slice(-CONFIG.realSimulationLogLimit),
+    gasContext: pending.gasContext || null,
+    orderFees: {
+      signatureFeeLamports: n(pending.order?.signatureFeeLamports),
+      prioritizationFeeLamports: n(pending.order?.prioritizationFeeLamports),
+      outputAtaRentLamports: n(pending.order?.outputAtaRentLamports),
+      wsolUpfrontRentLamports: n(pending.order?.wsolUpfrontRentLamports),
+      refundableRentLamports: n(pending.order?.refundableRentLamports)
+    }
+  };
+
+  if (transferMatch) {
+    const currentLamports = n(transferMatch[1]);
+    const neededLamports = n(transferMatch[2]);
+    const shortfallLamports = Math.max(0, neededLamports - currentLamports);
+    return {
+      code: "SELF_PAY_INSUFFICIENT_SOL",
+      status: 400,
+      message:
+        `Transaction cần chuyển ${neededLamports / LAMPORTS_PER_SOL} SOL tại instruction ${instructionIndex ?? "?"}, ` +
+        `nhưng account lúc đó chỉ còn ${currentLamports / LAMPORTS_PER_SOL} SOL. ` +
+        `Thiếu ít nhất ${(shortfallLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL.`,
+      details: { ...details, currentLamports, neededLamports, shortfallLamports }
+    };
+  }
+
+  if (tokenInsufficient) {
+    return {
+      code: "SELF_PAY_INSUFFICIENT_TOKEN",
+      status: 400,
+      message:
+        "Transaction bán nhiều token hơn số dư token khả dụng tại lúc mô phỏng. Hãy tải lại số dư và lấy quote mới.",
+      details
+    };
+  }
+
+  if (customOne && pending.side === "buy") {
+    const required = n(pending.gasContext?.requiredSelfPaySol);
+    const available = availableLamports / LAMPORTS_PER_SOL;
+    const estimatedShortfall = Math.max(0, required - available);
+    return {
+      code: "SELF_PAY_INSUFFICIENT_SOL",
+      status: 400,
+      message:
+        `Simulation lỗi 0x1 tại instruction ${instructionIndex ?? "?"}; trong lệnh mua SOL, lỗi này thường là ` +
+        `không đủ lamports cho tiền mua, phí hoặc rent tạm của Wrapped SOL. ` +
+        `Ví có ${available.toFixed(6)} SOL` +
+        (required > 0 ? `, mức an toàn ước tính cần ${required.toFixed(6)} SOL` : "") +
+        (estimatedShortfall > 0 ? `, thiếu khoảng ${estimatedShortfall.toFixed(6)} SOL.` : "."),
+      details: { ...details, estimatedRequiredSol: required, estimatedShortfallSol: estimatedShortfall }
+    };
+  }
+
+  return {
+    code: "SELF_PAY_SIMULATION_FAILED",
+    status: 400,
+    message:
+      `Transaction self-pay không vượt qua mô phỏng tại instruction ${instructionIndex ?? "?"}` +
+      (failedProgram ? ` của program ${failedProgram}` : "") +
+      `. Không gửi transaction để tránh mất phí.`,
+    details
+  };
+}
+
+async function simulateSignedSelfPayTransaction(signedTransaction) {
+  return rpc("simulateTransaction", [
+    signedTransaction,
+    {
+      encoding: "base64",
+      commitment: "confirmed",
+      sigVerify: true,
+      innerInstructions: true
+    }
+  ]);
+}
+
 async function sendRealSelfPayTransaction(body) {
   const requestId = String(body.requestId || "");
   const signedTransaction = String(body.signedTransaction || "");
@@ -2857,13 +3068,60 @@ async function sendRealSelfPayTransaction(body) {
   }
   if (!signedTransaction) throw realOrderError("MISSING_SIGNED_TX", "Thiếu transaction đã ký từ Phantom", null, 400);
 
+  const latestBalance = await rpc("getBalance", [wallet, { commitment: "confirmed" }]);
+  const availableLamports = n(latestBalance?.value);
+
+  let simulation;
+  try {
+    simulation = await simulateSignedSelfPayTransaction(signedTransaction);
+  } catch (error) {
+    // Some providers return a JSON-RPC error directly rather than a result.value.err.
+    if (isDeterministicTransactionRpcError(error, "simulateTransaction")) {
+      const synthetic = {
+        value: {
+          err: error.rpcData?.err || error.rpcData || error.message,
+          logs: error.rpcData?.logs || [],
+          unitsConsumed: error.rpcData?.unitsConsumed || 0,
+          fee: error.rpcData?.fee || 0
+        }
+      };
+      const classified = classifySelfPaySimulation({
+        simulation: synthetic,
+        pending,
+        availableLamports
+      });
+      throw realOrderError(classified.code, classified.message, classified.details, classified.status);
+    }
+    throw realOrderError(
+      "SELF_PAY_SIMULATION_RPC_FAILED",
+      `Không thể mô phỏng transaction trước khi gửi: ${error.message}`,
+      {
+        rpcCode: error.rpcCode || null,
+        rpcEndpoint: rpcEndpointLabel(error.rpcEndpoint || activeRpcUrl),
+        rpcFailures: error.rpcFailures || null
+      },
+      502
+    );
+  }
+
+  if (simulation?.value?.err) {
+    const classified = classifySelfPaySimulation({
+      simulation,
+      pending,
+      availableLamports
+    });
+    throw realOrderError(classified.code, classified.message, classified.details, classified.status);
+  }
+
   let signature;
   try {
+    // We have already simulated this exact signed transaction successfully.
+    // Avoid running the same preflight a second time.
     signature = await rpc("sendTransaction", [
       signedTransaction,
       {
         encoding: "base64",
-        skipPreflight: false,
+        skipPreflight: true,
         preflightCommitment: "confirmed",
         maxRetries: 3
       }
@@ -2871,8 +3129,16 @@ async function sendRealSelfPayTransaction(body) {
   } catch (error) {
     throw realOrderError(
       "SELF_PAY_SEND_FAILED",
-      `RPC từ chối transaction self-pay: ${error.message}`,
-      { rpcCode: error.rpcCode || null },
+      `Không gửi được transaction self-pay: ${error.message}`,
+      {
+        rpcCode: error.rpcCode || null,
+        rpcEndpoint: rpcEndpointLabel(error.rpcEndpoint || activeRpcUrl),
+        rpcData: error.rpcData || null,
+        simulation: {
+          feeLamports: n(simulation?.value?.fee),
+          unitsConsumed: n(simulation?.value?.unitsConsumed)
+        }
+      },
       502
     );
   }
@@ -2895,6 +3161,10 @@ async function sendRealSelfPayTransaction(body) {
   return {
     ok: true,
     executionMode: "rpc-self-pay",
+    simulation: {
+      feeLamports: n(simulation?.value?.fee),
+      unitsConsumed: n(simulation?.value?.unitsConsumed)
+    },
     execution,
     trade,
     explorerUrl: `https://solscan.io/tx/${signature}`
@@ -3065,15 +3335,18 @@ async function getRealJupiterOrder(body) {
         );
       }
     } else {
-      const missingAtaText = gasContext.ataExists
-        ? "Ví đã có token account."
-        : `Ví chưa có token account; riêng rent ước tính ${gasContext.ataRentSol.toFixed(6)} SOL.`;
+      const missingAtaText = gasContext.outputAtaExists
+        ? "Ví đã có token account nhận meme."
+        : `Ví chưa có token account nhận meme; rent khoảng ${gasContext.outputAtaRentSol.toFixed(6)} SOL.`;
+      const wsolText = gasContext.wsolUpfrontRentSol > 0
+        ? ` Ngoài ra cần tạm ứng ${gasContext.wsolUpfrontRentSol.toFixed(6)} SOL để wrap SOL; khoản này được hoàn lại khi swap thành công.`
+        : "";
       const topUpSuggestion = Math.max(gasContext.shortfallSol + 0.0002, 0);
       throw realOrderError(
         "JUPITER_GASLESS_MINIMUM",
         `Lệnh chỉ khoảng $${gasContext.tradeValueUsd.toFixed(2)}, thấp hơn mức gasless khoảng $${gasContext.gaslessMinimumUsd.toFixed(2)}. ` +
         `Ví có ${gasContext.availableSol.toFixed(6)} SOL nhưng tự trả cần khoảng ${gasContext.requiredSelfPaySol.toFixed(6)} SOL. ` +
-        `${missingAtaText} Thiếu khoảng ${gasContext.shortfallSol.toFixed(6)} SOL.`,
+        `${missingAtaText}${wsolText} Thiếu khoảng ${gasContext.shortfallSol.toFixed(6)} SOL.`,
         {
           ...gasContext,
           suggestedTopUpSol: topUpSuggestion,
@@ -3165,6 +3438,7 @@ async function getRealJupiterOrder(body) {
     createdAt: Date.now(),
     order,
     executionMode: order.executionMode || "jupiter-v2-execute",
+    gasContext: orderResult.gasContext || gasContext || null,
     quoteMode: orderResult.quoteMode
   };
   realOrderCache.set(order.requestId, pending);
